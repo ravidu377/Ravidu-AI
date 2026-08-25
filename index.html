@@ -1,0 +1,1391 @@
+import os
+import uuid
+from PIL import Image, ImageEnhance, ImageFilter
+import gradio as gr
+from gradio_client import Client
+from moviepy import VideoFileClip, concatenate_videoclips
+
+
+APP_NAME = "Ravidu AI Studio"
+
+
+# =========================================================
+# HELPERS
+# =========================================================
+
+def get_path(file):
+    if file is None:
+        return None
+
+    if isinstance(file, str):
+        return file
+
+    if isinstance(file, dict):
+        return file.get("path") or file.get("name")
+
+    return getattr(file, "name", None)
+
+
+# =========================================================
+# 1. SINHALA AI CHAT
+# =========================================================
+
+def chat_ai(message, history):
+    if not message or not message.strip():
+        return history, ""
+
+    try:
+        client = Client("Qwen/Qwen2.5-72B-Instruct")
+
+        old_history = []
+
+        result = client.predict(
+            query=message,
+            history=old_history,
+            system_prompt=(
+                "You are Ravidu AI. "
+                "You are a helpful and friendly assistant. "
+                "If the user writes Sinhala, reply naturally in Sinhala. "
+                "If the user writes English, reply in English. "
+                "Give clear and useful answers."
+            ),
+            api_name="/model_chat"
+        )
+
+        if isinstance(result, str):
+            answer = result
+
+        elif isinstance(result, (list, tuple)):
+            answer = str(result[-1])
+
+            if isinstance(result[-1], (list, tuple)):
+                answer = str(result[-1][-1])
+
+        else:
+            answer = str(result)
+
+    except Exception as e:
+        print("CHAT ERROR:", e)
+        answer = "⚠️ AI Chat එකේ ගැටලුවක් ඇති වුණා. නැවත උත්සාහ කරන්න."
+
+    history = history or []
+
+    history.append({
+        "role": "user",
+        "content": message
+    })
+
+    history.append({
+        "role": "assistant",
+        "content": answer
+    })
+
+    return history, ""
+
+
+# =========================================================
+# 2. AI IMAGE GENERATOR
+# =========================================================
+
+def generate_image(prompt):
+    if not prompt or not prompt.strip():
+        return None
+
+    try:
+        client = Client("black-forest-labs/FLUX.1-schnell")
+
+        result = client.predict(
+            prompt=prompt,
+            seed=0,
+            randomize_seed=True,
+            width=1024,
+            height=1024,
+            num_inference_steps=4,
+            api_name="/predict"
+        )
+
+        if isinstance(result, (list, tuple)):
+            return result[0]
+
+        return result
+
+    except Exception as e:
+        print("IMAGE ERROR:", e)
+        return None
+
+
+# =========================================================
+# 3. PHOTO ENHANCE
+# =========================================================
+
+def enhance_photo(image):
+    if image is None:
+        return None
+
+    try:
+        if not isinstance(image, Image.Image):
+            image = Image.open(image)
+
+        image = image.convert("RGB")
+
+        # Moderate enhancement
+        image = ImageEnhance.Contrast(image).enhance(1.12)
+        image = ImageEnhance.Color(image).enhance(1.08)
+        image = ImageEnhance.Sharpness(image).enhance(1.35)
+
+        image = image.filter(
+            ImageFilter.UnsharpMask(
+                radius=1.2,
+                percent=120,
+                threshold=3
+            )
+        )
+
+        return image
+
+    except Exception as e:
+        print("ENHANCE ERROR:", e)
+        return None
+
+
+# =========================================================
+# 4. 4K UPSCALE
+# =========================================================
+
+def upscale_4k(image):
+    if image is None:
+        return None
+
+    try:
+        if not isinstance(image, Image.Image):
+            image = Image.open(image)
+
+        image = image.convert("RGB")
+
+        # Keep aspect ratio while fitting inside 3840x2160
+        image.thumbnail((3840, 2160), Image.Resampling.LANCZOS)
+
+        return image
+
+    except Exception as e:
+        print("4K ERROR:", e)
+        return None
+
+
+# =========================================================
+# 5. BASIC PHOTO EDITOR
+# =========================================================
+
+def edit_photo(image, brightness, contrast, sharpness, saturation,
+               blur, rotate):
+
+    if image is None:
+        return None
+
+    try:
+        if not isinstance(image, Image.Image):
+            image = Image.open(image)
+
+        image = image.convert("RGB")
+
+        image = ImageEnhance.Brightness(
+            image
+        ).enhance(brightness)
+
+        image = ImageEnhance.Contrast(
+            image
+        ).enhance(contrast)
+
+        image = ImageEnhance.Color(
+            image
+        ).enhance(saturation)
+
+        image = ImageEnhance.Sharpness(
+            image
+        ).enhance(sharpness)
+
+        if blur > 0:
+            image = image.filter(
+                ImageFilter.GaussianBlur(blur)
+            )
+
+        if rotate != 0:
+            image = image.rotate(
+                rotate,
+                expand=True
+            )
+
+        return image
+
+    except Exception as e:
+        print("EDIT ERROR:", e)
+        return None
+
+
+# =========================================================
+# 6. BACKGROUND REMOVE
+# =========================================================
+
+def remove_background(image):
+    if image is None:
+        return None
+
+    try:
+        from rembg import remove
+
+        if not isinstance(image, Image.Image):
+            image = Image.open(image)
+
+        return remove(image)
+
+    except Exception as e:
+        print("BACKGROUND ERROR:", e)
+        return None
+
+
+# =========================================================
+# 7. AI VIDEO
+# =========================================================
+
+def generate_video(prompt):
+
+    if not prompt or not prompt.strip():
+        return None
+
+    try:
+        client = Client("Wan-AI/Wan2.1-T2V-1.3B")
+
+        result = client.predict(
+            prompt=prompt,
+            api_name="/generate"
+        )
+
+        return result
+
+    except Exception as e:
+        print("VIDEO ERROR:", e)
+        return None
+
+
+# =========================================================
+# 8. PHOTO -> VIDEO
+# =========================================================
+
+def image_to_video(image, prompt):
+
+    if image is None:
+        return None
+
+    try:
+        client = Client("Wan-AI/Wan2.1-I2V-14B-480P")
+
+        result = client.predict(
+            image=image,
+            prompt=prompt or "A cinematic smooth camera movement",
+            api_name="/generate"
+        )
+
+        return result
+
+    except Exception as e:
+        print("I2V ERROR:", e)
+        return None
+
+
+# =========================================================
+# 9. VIDEO JOIN
+# =========================================================
+
+def join_videos(video1, video2):
+
+    path1 = get_path(video1)
+    path2 = get_path(video2)
+
+    if not path1 or not path2:
+        return None
+
+    try:
+
+        clip1 = VideoFileClip(path1)
+        clip2 = VideoFileClip(path2)
+
+        final = concatenate_videoclips(
+            [clip1, clip2],
+            method="compose"
+        )
+
+        output = f"ravidu_{uuid.uuid4().hex}.mp4"
+
+        final.write_videofile(
+            output,
+            codec="libx264",
+            audio_codec="aac",
+            logger=None
+        )
+
+        clip1.close()
+        clip2.close()
+        final.close()
+
+        return output
+
+    except Exception as e:
+        print("JOIN ERROR:", e)
+        return None
+
+
+# =========================================================
+# USER INTERFACE
+# =========================================================
+
+with gr.Blocks(
+    title=APP_NAME,
+    theme=gr.themes.Soft()
+) as app:
+
+    gr.Markdown(
+        """
+        # 🚀 Ravidu AI Studio
+
+        ### Sinhala AI • Photo AI • Video AI • 4K Tools
+
+        ඔයාගේ AI tools එකම තැනක.
+        """
+    )
+
+    # -----------------------------------------------------
+    # CHAT
+    # -----------------------------------------------------
+
+    with gr.Tab("💬 AI Chat"):
+
+        chatbot = gr.Chatbot(
+            label="Ravidu AI",
+            height=450
+        )
+
+        message = gr.Textbox(
+            label="ප්‍රශ්නය",
+            placeholder="සිංහලෙන් ප්‍රශ්නයක් ලියන්න...",
+            lines=2
+        )
+
+        send = gr.Button(
+            "🚀 Send",
+            variant="primary"
+        )
+
+        clear = gr.Button("🗑️ Clear")
+
+        send.click(
+            chat_ai,
+            inputs=[message, chatbot],
+            outputs=[chatbot, message]
+        )
+
+        message.submit(
+            chat_ai,
+            inputs=[message, chatbot],
+            outputs=[chatbot, message]
+        )
+
+        clear.click(
+            lambda: [],
+            outputs=chatbot
+        )
+
+    # -----------------------------------------------------
+    # AI IMAGE
+    # -----------------------------------------------------
+
+    with gr.Tab("🎨 AI Image"):
+
+        prompt = gr.Textbox(
+            label="Image Prompt",
+            placeholder="A beautiful futuristic city at night...",
+            lines=3
+        )
+
+        generate = gr.Button(
+            "🎨 Generate",
+            variant="primary"
+        )
+
+        generated_image = gr.Image(
+            label="AI Image"
+        )
+
+        generate.click(
+            generate_image,
+            inputs=prompt,
+            outputs=generated_image
+        )
+
+    # -----------------------------------------------------
+    # PHOTO EDIT
+    # -----------------------------------------------------
+
+    with gr.Tab("📸 Photo Edit"):
+
+        edit_input = gr.Image(
+            label="Upload Photo",
+            type="pil"
+        )
+
+        brightness = gr.Slider(
+            0.5, 2.0, 1.0,
+            label="Brightness"
+        )
+
+        contrast = gr.Slider(
+            0.5, 2.0, 1.0,
+            label="Contrast"
+        )
+
+        sharpness = gr.Slider(
+            0.0, 3.0, 1.0,
+            label="Sharpness"
+        )
+
+        saturation = gr.Slider(
+            0.0, 2.0, 1.0,
+            label="Saturation"
+        )
+
+        blur = gr.Slider(
+            0.0, 10.0, 0.0,
+            label="Blur"
+        )
+
+        rotate = gr.Slider(
+            -180, 180, 0,
+            step=1,
+            label="Rotate"
+        )
+
+        edit_button = gr.Button(
+            "✨ Edit Photo",
+            variant="primary"
+        )
+
+        edit_output = gr.Image(
+            label="Edited Photo"
+        )
+
+        edit_button.click(
+            edit_photo,
+            inputs=[
+                edit_input,
+                brightness,
+                contrast,
+                sharpness,
+                saturation,
+                blur,
+                rotate
+            ],
+            outputs=edit_output
+        )
+
+    # -----------------------------------------------------
+    # BACKGROUND REMOVE
+    # -----------------------------------------------------
+
+    with gr.Tab("🪄 Background"):
+
+        bg_input = gr.Image(
+            label="Upload Photo",
+            type="pil"
+        )
+
+        bg_button = gr.Button(
+            "🪄 Remove Background",
+            variant="primary"
+        )
+
+        bg_output = gr.Image(
+            label="Background Removed"
+        )
+
+        bg_button.click(
+            remove_background,
+            inputs=bg_input,
+            outputs=bg_output
+        )
+
+    # -----------------------------------------------------
+    # PHOTO ENHANCE
+    # -----------------------------------------------------
+
+    with gr.Tab("✨ Enhance"):
+
+        enhance_input = gr.Image(
+            label="Upload Photo",
+            type="pil"
+        )
+
+        enhance_button = gr.Button(
+            "✨ Enhance Photo",
+            variant="primary"
+        )
+
+        enhance_output = gr.Image(
+            label="Enhanced Photo"
+        )
+
+        enhance_button.click(
+            enhance_photo,
+            inputs=enhance_input,
+            outputs=enhance_output
+        )
+
+    # -----------------------------------------------------
+    # 4K UPSCALE
+    # -----------------------------------------------------
+
+    with gr.Tab("💎 4K"):
+
+        fourk_input = gr.Image(
+            label="Upload Photo",
+            type="pil"
+        )
+
+        fourk_button = gr.Button(
+            "💎 Make 4K",
+            variant="primary"
+        )
+
+        fourk_output = gr.Image(
+            label="4K Output"
+        )
+
+        fourk_button.click(
+            upscale_4k,
+            inputs=fourk_input,
+            outputs=fourk_output
+        )
+
+    # -----------------------------------------------------
+    # TEXT TO VIDEO
+    # -----------------------------------------------------
+
+    with gr.Tab("🎬 AI Video"):
+
+        video_prompt = gr.Textbox(
+            label="Video Prompt",
+            placeholder=(
+                "A cinematic drone flying over "
+                "mountains during sunset..."
+            ),
+            lines=3
+        )
+
+        video_button = gr.Button(
+            "🎬 Generate Video",
+            variant="primary"
+        )
+
+        video_output = gr.Video(
+            label="AI Video"
+        )
+
+        video_button.click(
+            generate_video,
+            inputs=video_prompt,
+            outputs=video_output
+        )
+
+    # -----------------------------------------------------
+    # IMAGE TO VIDEO
+    # -----------------------------------------------------
+
+    with gr.Tab("🖼️➡️🎬 Photo to Video"):
+
+        i2v_image = gr.Image(
+            label="Upload Photo",
+            type="filepath"
+        )
+
+        i2v_prompt = gr.Textbox(
+            label="Movement Prompt",
+            placeholder="Slow cinematic camera movement..."
+        )
+
+        i2v_button = gr.Button(
+            "🎬 Create Video",
+            variant="primary"
+        )
+
+        i2v_output = gr.Video(
+            label="Generated Video"
+        )
+
+        i2v_button.click(
+            image_to_video,
+            inputs=[i2v_image, i2v_prompt],
+            outputs=i2v_output
+        )
+
+    # -----------------------------------------------------
+    # VIDEO EDITOR
+    # -----------------------------------------------------
+
+    with gr.Tab("✂️ Video Editor"):
+
+        video1 = gr.Video(
+            label="Video 1"
+        )
+
+        video2 = gr.Video(
+            label="Video 2"
+        )
+
+        join_button = gr.Button(
+            "✂️ Join Videos",
+            variant="primary"
+        )
+
+        joined_video = gr.Video(
+            label="Final Video"
+        )
+
+        join_button.click(
+            join_videos,
+            inputs=[video1, video2],
+            outputs=joined_video
+        )
+
+    # -----------------------------------------------------
+    # RULES
+    # -----------------------------------------------------
+
+    with gr.Accordion(
+        "📜 Ravidu AI Rules",
+        open=False
+    ):
+
+        gr.Markdown(
+            """
+            ### Ravidu AI නීති
+
+            1. නීති විරෝධී ක්‍රියා සඳහා AI භාවිතා නොකරන්න.
+
+            2. වෙනත් පුද්ගලයන්ගේ private photos/videos
+               අවසරයකින් තොරව භාවිතා නොකරන්න.
+
+            3. පුද්ගලයන් රැවටීමට හෝ හානි කිරීමට
+               deepfake content නිර්මාණය නොකරන්න.
+
+            4. Explicit sexual/NSFW content
+               නිර්මාණය නොකරන්න.
+
+            5. AI-generated media අවශ්‍ය අවස්ථාවල
+               AI-generated බව පැහැදිලිව සඳහන් කරන්න.
+            """
+        )
+
+    gr.Markdown(
+        """
+        ---
+        🚀 **Ravidu AI Studio**
+        """
+    )
+
+
+# =========================================================
+# RUN
+# =========================================================
+
+if __name__ == "__main__":
+    app.launch()import os
+import uuid
+from PIL import Image, ImageEnhance, ImageFilter
+import gradio as gr
+from gradio_client import Client
+from moviepy import VideoFileClip, concatenate_videoclips
+
+
+APP_NAME = "Ravidu AI Studio"
+
+
+# =========================================================
+# HELPERS
+# =========================================================
+
+def get_path(file):
+    if file is None:
+        return None
+
+    if isinstance(file, str):
+        return file
+
+    if isinstance(file, dict):
+        return file.get("path") or file.get("name")
+
+    return getattr(file, "name", None)
+
+
+# =========================================================
+# 1. SINHALA AI CHAT
+# =========================================================
+
+def chat_ai(message, history):
+    if not message or not message.strip():
+        return history, ""
+
+    try:
+        client = Client("Qwen/Qwen2.5-72B-Instruct")
+
+        old_history = []
+
+        result = client.predict(
+            query=message,
+            history=old_history,
+            system_prompt=(
+                "You are Ravidu AI. "
+                "You are a helpful and friendly assistant. "
+                "If the user writes Sinhala, reply naturally in Sinhala. "
+                "If the user writes English, reply in English. "
+                "Give clear and useful answers."
+            ),
+            api_name="/model_chat"
+        )
+
+        if isinstance(result, str):
+            answer = result
+
+        elif isinstance(result, (list, tuple)):
+            answer = str(result[-1])
+
+            if isinstance(result[-1], (list, tuple)):
+                answer = str(result[-1][-1])
+
+        else:
+            answer = str(result)
+
+    except Exception as e:
+        print("CHAT ERROR:", e)
+        answer = "⚠️ AI Chat එකේ ගැටලුවක් ඇති වුණා. නැවත උත්සාහ කරන්න."
+
+    history = history or []
+
+    history.append({
+        "role": "user",
+        "content": message
+    })
+
+    history.append({
+        "role": "assistant",
+        "content": answer
+    })
+
+    return history, ""
+
+
+# =========================================================
+# 2. AI IMAGE GENERATOR
+# =========================================================
+
+def generate_image(prompt):
+    if not prompt or not prompt.strip():
+        return None
+
+    try:
+        client = Client("black-forest-labs/FLUX.1-schnell")
+
+        result = client.predict(
+            prompt=prompt,
+            seed=0,
+            randomize_seed=True,
+            width=1024,
+            height=1024,
+            num_inference_steps=4,
+            api_name="/predict"
+        )
+
+        if isinstance(result, (list, tuple)):
+            return result[0]
+
+        return result
+
+    except Exception as e:
+        print("IMAGE ERROR:", e)
+        return None
+
+
+# =========================================================
+# 3. PHOTO ENHANCE
+# =========================================================
+
+def enhance_photo(image):
+    if image is None:
+        return None
+
+    try:
+        if not isinstance(image, Image.Image):
+            image = Image.open(image)
+
+        image = image.convert("RGB")
+
+        # Moderate enhancement
+        image = ImageEnhance.Contrast(image).enhance(1.12)
+        image = ImageEnhance.Color(image).enhance(1.08)
+        image = ImageEnhance.Sharpness(image).enhance(1.35)
+
+        image = image.filter(
+            ImageFilter.UnsharpMask(
+                radius=1.2,
+                percent=120,
+                threshold=3
+            )
+        )
+
+        return image
+
+    except Exception as e:
+        print("ENHANCE ERROR:", e)
+        return None
+
+
+# =========================================================
+# 4. 4K UPSCALE
+# =========================================================
+
+def upscale_4k(image):
+    if image is None:
+        return None
+
+    try:
+        if not isinstance(image, Image.Image):
+            image = Image.open(image)
+
+        image = image.convert("RGB")
+
+        # Keep aspect ratio while fitting inside 3840x2160
+        image.thumbnail((3840, 2160), Image.Resampling.LANCZOS)
+
+        return image
+
+    except Exception as e:
+        print("4K ERROR:", e)
+        return None
+
+
+# =========================================================
+# 5. BASIC PHOTO EDITOR
+# =========================================================
+
+def edit_photo(image, brightness, contrast, sharpness, saturation,
+               blur, rotate):
+
+    if image is None:
+        return None
+
+    try:
+        if not isinstance(image, Image.Image):
+            image = Image.open(image)
+
+        image = image.convert("RGB")
+
+        image = ImageEnhance.Brightness(
+            image
+        ).enhance(brightness)
+
+        image = ImageEnhance.Contrast(
+            image
+        ).enhance(contrast)
+
+        image = ImageEnhance.Color(
+            image
+        ).enhance(saturation)
+
+        image = ImageEnhance.Sharpness(
+            image
+        ).enhance(sharpness)
+
+        if blur > 0:
+            image = image.filter(
+                ImageFilter.GaussianBlur(blur)
+            )
+
+        if rotate != 0:
+            image = image.rotate(
+                rotate,
+                expand=True
+            )
+
+        return image
+
+    except Exception as e:
+        print("EDIT ERROR:", e)
+        return None
+
+
+# =========================================================
+# 6. BACKGROUND REMOVE
+# =========================================================
+
+def remove_background(image):
+    if image is None:
+        return None
+
+    try:
+        from rembg import remove
+
+        if not isinstance(image, Image.Image):
+            image = Image.open(image)
+
+        return remove(image)
+
+    except Exception as e:
+        print("BACKGROUND ERROR:", e)
+        return None
+
+
+# =========================================================
+# 7. AI VIDEO
+# =========================================================
+
+def generate_video(prompt):
+
+    if not prompt or not prompt.strip():
+        return None
+
+    try:
+        client = Client("Wan-AI/Wan2.1-T2V-1.3B")
+
+        result = client.predict(
+            prompt=prompt,
+            api_name="/generate"
+        )
+
+        return result
+
+    except Exception as e:
+        print("VIDEO ERROR:", e)
+        return None
+
+
+# =========================================================
+# 8. PHOTO -> VIDEO
+# =========================================================
+
+def image_to_video(image, prompt):
+
+    if image is None:
+        return None
+
+    try:
+        client = Client("Wan-AI/Wan2.1-I2V-14B-480P")
+
+        result = client.predict(
+            image=image,
+            prompt=prompt or "A cinematic smooth camera movement",
+            api_name="/generate"
+        )
+
+        return result
+
+    except Exception as e:
+        print("I2V ERROR:", e)
+        return None
+
+
+# =========================================================
+# 9. VIDEO JOIN
+# =========================================================
+
+def join_videos(video1, video2):
+
+    path1 = get_path(video1)
+    path2 = get_path(video2)
+
+    if not path1 or not path2:
+        return None
+
+    try:
+
+        clip1 = VideoFileClip(path1)
+        clip2 = VideoFileClip(path2)
+
+        final = concatenate_videoclips(
+            [clip1, clip2],
+            method="compose"
+        )
+
+        output = f"ravidu_{uuid.uuid4().hex}.mp4"
+
+        final.write_videofile(
+            output,
+            codec="libx264",
+            audio_codec="aac",
+            logger=None
+        )
+
+        clip1.close()
+        clip2.close()
+        final.close()
+
+        return output
+
+    except Exception as e:
+        print("JOIN ERROR:", e)
+        return None
+
+
+# =========================================================
+# USER INTERFACE
+# =========================================================
+
+with gr.Blocks(
+    title=APP_NAME,
+    theme=gr.themes.Soft()
+) as app:
+
+    gr.Markdown(
+        """
+        # 🚀 Ravidu AI Studio
+
+        ### Sinhala AI • Photo AI • Video AI • 4K Tools
+
+        ඔයාගේ AI tools එකම තැනක.
+        """
+    )
+
+    # -----------------------------------------------------
+    # CHAT
+    # -----------------------------------------------------
+
+    with gr.Tab("💬 AI Chat"):
+
+        chatbot = gr.Chatbot(
+            label="Ravidu AI",
+            height=450
+        )
+
+        message = gr.Textbox(
+            label="ප්‍රශ්නය",
+            placeholder="සිංහලෙන් ප්‍රශ්නයක් ලියන්න...",
+            lines=2
+        )
+
+        send = gr.Button(
+            "🚀 Send",
+            variant="primary"
+        )
+
+        clear = gr.Button("🗑️ Clear")
+
+        send.click(
+            chat_ai,
+            inputs=[message, chatbot],
+            outputs=[chatbot, message]
+        )
+
+        message.submit(
+            chat_ai,
+            inputs=[message, chatbot],
+            outputs=[chatbot, message]
+        )
+
+        clear.click(
+            lambda: [],
+            outputs=chatbot
+        )
+
+    # -----------------------------------------------------
+    # AI IMAGE
+    # -----------------------------------------------------
+
+    with gr.Tab("🎨 AI Image"):
+
+        prompt = gr.Textbox(
+            label="Image Prompt",
+            placeholder="A beautiful futuristic city at night...",
+            lines=3
+        )
+
+        generate = gr.Button(
+            "🎨 Generate",
+            variant="primary"
+        )
+
+        generated_image = gr.Image(
+            label="AI Image"
+        )
+
+        generate.click(
+            generate_image,
+            inputs=prompt,
+            outputs=generated_image
+        )
+
+    # -----------------------------------------------------
+    # PHOTO EDIT
+    # -----------------------------------------------------
+
+    with gr.Tab("📸 Photo Edit"):
+
+        edit_input = gr.Image(
+            label="Upload Photo",
+            type="pil"
+        )
+
+        brightness = gr.Slider(
+            0.5, 2.0, 1.0,
+            label="Brightness"
+        )
+
+        contrast = gr.Slider(
+            0.5, 2.0, 1.0,
+            label="Contrast"
+        )
+
+        sharpness = gr.Slider(
+            0.0, 3.0, 1.0,
+            label="Sharpness"
+        )
+
+        saturation = gr.Slider(
+            0.0, 2.0, 1.0,
+            label="Saturation"
+        )
+
+        blur = gr.Slider(
+            0.0, 10.0, 0.0,
+            label="Blur"
+        )
+
+        rotate = gr.Slider(
+            -180, 180, 0,
+            step=1,
+            label="Rotate"
+        )
+
+        edit_button = gr.Button(
+            "✨ Edit Photo",
+            variant="primary"
+        )
+
+        edit_output = gr.Image(
+            label="Edited Photo"
+        )
+
+        edit_button.click(
+            edit_photo,
+            inputs=[
+                edit_input,
+                brightness,
+                contrast,
+                sharpness,
+                saturation,
+                blur,
+                rotate
+            ],
+            outputs=edit_output
+        )
+
+    # -----------------------------------------------------
+    # BACKGROUND REMOVE
+    # -----------------------------------------------------
+
+    with gr.Tab("🪄 Background"):
+
+        bg_input = gr.Image(
+            label="Upload Photo",
+            type="pil"
+        )
+
+        bg_button = gr.Button(
+            "🪄 Remove Background",
+            variant="primary"
+        )
+
+        bg_output = gr.Image(
+            label="Background Removed"
+        )
+
+        bg_button.click(
+            remove_background,
+            inputs=bg_input,
+            outputs=bg_output
+        )
+
+    # -----------------------------------------------------
+    # PHOTO ENHANCE
+    # -----------------------------------------------------
+
+    with gr.Tab("✨ Enhance"):
+
+        enhance_input = gr.Image(
+            label="Upload Photo",
+            type="pil"
+        )
+
+        enhance_button = gr.Button(
+            "✨ Enhance Photo",
+            variant="primary"
+        )
+
+        enhance_output = gr.Image(
+            label="Enhanced Photo"
+        )
+
+        enhance_button.click(
+            enhance_photo,
+            inputs=enhance_input,
+            outputs=enhance_output
+        )
+
+    # -----------------------------------------------------
+    # 4K UPSCALE
+    # -----------------------------------------------------
+
+    with gr.Tab("💎 4K"):
+
+        fourk_input = gr.Image(
+            label="Upload Photo",
+            type="pil"
+        )
+
+        fourk_button = gr.Button(
+            "💎 Make 4K",
+            variant="primary"
+        )
+
+        fourk_output = gr.Image(
+            label="4K Output"
+        )
+
+        fourk_button.click(
+            upscale_4k,
+            inputs=fourk_input,
+            outputs=fourk_output
+        )
+
+    # -----------------------------------------------------
+    # TEXT TO VIDEO
+    # -----------------------------------------------------
+
+    with gr.Tab("🎬 AI Video"):
+
+        video_prompt = gr.Textbox(
+            label="Video Prompt",
+            placeholder=(
+                "A cinematic drone flying over "
+                "mountains during sunset..."
+            ),
+            lines=3
+        )
+
+        video_button = gr.Button(
+            "🎬 Generate Video",
+            variant="primary"
+        )
+
+        video_output = gr.Video(
+            label="AI Video"
+        )
+
+        video_button.click(
+            generate_video,
+            inputs=video_prompt,
+            outputs=video_output
+        )
+
+    # -----------------------------------------------------
+    # IMAGE TO VIDEO
+    # -----------------------------------------------------
+
+    with gr.Tab("🖼️➡️🎬 Photo to Video"):
+
+        i2v_image = gr.Image(
+            label="Upload Photo",
+            type="filepath"
+        )
+
+        i2v_prompt = gr.Textbox(
+            label="Movement Prompt",
+            placeholder="Slow cinematic camera movement..."
+        )
+
+        i2v_button = gr.Button(
+            "🎬 Create Video",
+            variant="primary"
+        )
+
+        i2v_output = gr.Video(
+            label="Generated Video"
+        )
+
+        i2v_button.click(
+            image_to_video,
+            inputs=[i2v_image, i2v_prompt],
+            outputs=i2v_output
+        )
+
+    # -----------------------------------------------------
+    # VIDEO EDITOR
+    # -----------------------------------------------------
+
+    with gr.Tab("✂️ Video Editor"):
+
+        video1 = gr.Video(
+            label="Video 1"
+        )
+
+        video2 = gr.Video(
+            label="Video 2"
+        )
+
+        join_button = gr.Button(
+            "✂️ Join Videos",
+            variant="primary"
+        )
+
+        joined_video = gr.Video(
+            label="Final Video"
+        )
+
+        join_button.click(
+            join_videos,
+            inputs=[video1, video2],
+            outputs=joined_video
+        )
+
+    # -----------------------------------------------------
+    # RULES
+    # -----------------------------------------------------
+
+    with gr.Accordion(
+        "📜 Ravidu AI Rules",
+        open=False
+    ):
+
+        gr.Markdown(
+            """
+            ### Ravidu AI නීති
+            1. වෙනත් පුද්ගලයන්ගේ private photos/videos
+               අවසරයකින් තොරව භාවිතා නොකරන්න.
+
+            2. පුද්ගලයන් රැවටීමට හෝ හානි කිරීමට
+               deepfake content නිර්මාණය නොකරන්න.
+
+            3. AI-generated media අවශ්‍ය අවස්ථාවල
+               AI-generated බව පැහැදිලිව සඳහන් කරන්න.
+            """
+        )
+
+    gr.Markdown(
+        """
+        ---
+        🚀 **Ravidu AI Studio**
+        """
+    )
+
+
+# =========================================================
+# RUN
+# =========================================================
+
+if __name__ == "__main__":
+    app.launch()
